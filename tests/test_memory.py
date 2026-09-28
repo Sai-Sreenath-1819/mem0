@@ -1028,7 +1028,7 @@ def test_delete_all_clears_scoped_messages(mock_sqlite, mock_llm_factory, mock_v
 
     memory.delete_all(user_id="alice")
 
-    memory.db.delete_messages.assert_called_once_with("user_id=alice")
+    memory.db.delete_messages.assert_called_once_with({"user_id": "alice"})
 
 
 @pytest.mark.asyncio
@@ -1051,7 +1051,7 @@ async def test_async_delete_all_clears_scoped_messages(mock_sqlite, mock_llm_fac
 
     await memory.delete_all(user_id="alice", agent_id="bot")
 
-    memory.db.delete_messages.assert_called_once_with("agent_id=bot&user_id=alice")
+    memory.db.delete_messages.assert_called_once_with({"agent_id": "bot", "user_id": "alice"})
 
 
 @patch('mem0.utils.factory.EmbedderFactory.create')

@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 import threading
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -295,17 +296,55 @@ class SQLiteManager:
                 logger.error(f"Failed to save messages: {e}")
                 raise
 
-    def delete_messages(self, session_scope: str) -> None:
-        """Delete all stored raw messages for a given session scope."""
-        if not session_scope:
+    def delete_messages(self, filters: Dict[str, Any]) -> None:
+        """
+        Deletes messages from the database based on the provided filters.
+        """
+        if not filters:
             return
+
+        allowed_keys = {"user_id", "agent_id", "run_id"}
         with self._lock:
             try:
                 self.connection.execute("BEGIN")
-                self.connection.execute(
-                    "DELETE FROM messages WHERE session_scope = ?",
-                    (session_scope,),
-                )
+
+                # Fetch only scopes that contain the required filter keys and values to narrow down the session_scope retrieval results.
+                like_conditions = ["session_scope LIKE ?" for _ in filters]
+                like_params = []
+                for key, val in filters.items():
+                    escaped_val = str(val).replace("%", "%25").replace("&", "%26").replace("=", "%3D")
+                    like_params.append(f"%{key}={escaped_val}%")
+
+                query = f"SELECT DISTINCT session_scope FROM messages WHERE {' AND '.join(like_conditions)}"
+                cur = self.connection.execute(query, like_params)
+                distinct_scopes = [row[0] for row in cur.fetchall()]
+
+                # Now filter to exact matches and add to scopes_to_delete list if the filters are a subset of the session_scope values.
+                scopes_to_delete = []
+                for scope_str in distinct_scopes:
+                    if not scope_str:
+                        continue
+
+                    try:
+                        decoded_scope = {}
+                        for component in scope_str.split("&"):
+                            if not component:
+                                continue
+                            key, value = component.split("=")
+                            if key not in allowed_keys or key in decoded_scope or not value:
+                                raise ValueError
+                            decoded_scope[key] = urllib.parse.unquote(value, errors="strict")
+
+                        for k, v in filters.items():
+                            if decoded_scope.get(k) != str(v):
+                                break
+                        else:
+                            scopes_to_delete.append((scope_str,))
+                    except ValueError:
+                        pass
+
+                if scopes_to_delete:
+                    self.connection.executemany("DELETE FROM messages WHERE session_scope = ?", scopes_to_delete)
                 self.connection.execute("COMMIT")
             except Exception as e:
                 self.connection.execute("ROLLBACK")

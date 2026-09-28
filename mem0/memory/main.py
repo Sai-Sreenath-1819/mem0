@@ -22,8 +22,9 @@ from mem0.configs.prompts import (
     PROCEDURAL_MEMORY_SYSTEM_PROMPT,
     generate_additive_extraction_prompt,
 )
-from mem0.exceptions import LLMError, VectorStoreError
+from mem0.exceptions import LLMError
 from mem0.exceptions import ValidationError as Mem0ValidationError
+from mem0.exceptions import VectorStoreError
 from mem0.memory.base import MemoryBase
 from mem0.memory.notices import (
     PERFORMANCE_SLOW_QUERY_THRESHOLD_SECONDS,
@@ -1948,9 +1949,7 @@ class Memory(MemoryBase):
                 self._delete_memory(memory.id)
             deleted_count += len(memories)
 
-        session_scope = _build_session_scope(filters)
-        if session_scope:
-            self.db.delete_messages(session_scope)
+        self.db.delete_messages(filters)
 
         logger.info(f"Deleted {deleted_count} memories")
 
@@ -3643,9 +3642,7 @@ class AsyncMemory(MemoryBase):
         if self._entity_store is not None:
             await self._bulk_clear_entity_store(filters)
 
-        session_scope = _build_session_scope(filters)
-        if session_scope:
-            await asyncio.to_thread(self.db.delete_messages, session_scope)
+        await asyncio.to_thread(self.db.delete_messages, filters)
 
         if errors:
             logger.warning("Failed to delete %d memories", len(errors))

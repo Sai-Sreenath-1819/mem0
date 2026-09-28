@@ -283,28 +283,57 @@ class TestSQLiteManager:
 
     # ========== Tests for delete_messages ==========
 
-    def test_delete_messages_clears_only_target_scope(self, sqlite_manager):
+    def test_delete_messages_clears_target_scope(self, sqlite_manager):
         """delete_messages must remove all rows for the given scope and leave others untouched."""
         sqlite_manager.save_messages([{"role": "user", "content": "My SSN is 123-45-6789"}], "user_id=alice")
+        sqlite_manager.save_messages([{"role": "user", "content": "My SSN is 123-45-6789"}], "user_id=alice&run_id=r1")
         sqlite_manager.save_messages([{"role": "user", "content": "unrelated"}], "user_id=bob")
-
-        sqlite_manager.delete_messages("user_id=alice")
-
+        # get_last_messages uses exact match, so check each scope individually
+        assert len(sqlite_manager.get_last_messages("user_id=alice")) == 1
+        assert len(sqlite_manager.get_last_messages("user_id=alice&run_id=r1")) == 1
+        # delete_messages uses subset match, so both alice scopes should be deleted
+        sqlite_manager.delete_messages({"user_id": "alice"})
         assert sqlite_manager.get_last_messages("user_id=alice") == []
+        assert sqlite_manager.get_last_messages("user_id=alice&run_id=r1") == []
         assert len(sqlite_manager.get_last_messages("user_id=bob")) == 1
 
-    def test_delete_messages_empty_scope_is_noop(self, sqlite_manager):
-        """delete_messages must not touch the table when given a falsy scope."""
+    def test_delete_messages_clears_multiple_sessions(self, sqlite_manager):
+        """Acceptance case: user A in run r1 AND r2 plus user B in r1; delete_all(user_id="A") clears both of A's runs, B untouched."""
+        sqlite_manager.save_messages([{"role": "user", "content": "hello"}], "run_id=r1&user_id=A")
+        sqlite_manager.save_messages([{"role": "user", "content": "hello"}], "run_id=r2&user_id=A")
+        sqlite_manager.save_messages([{"role": "user", "content": "hello"}], "run_id=r1&user_id=B")
+        sqlite_manager.delete_messages({"user_id": "A"})
+        assert len(sqlite_manager.get_last_messages("run_id=r1&user_id=A")) == 0
+        assert len(sqlite_manager.get_last_messages("run_id=r2&user_id=A")) == 0
+        assert len(sqlite_manager.get_last_messages("run_id=r1&user_id=B")) == 1
+
+    def test_delete_messages_tricky_ids(self, sqlite_manager):
+        """Tricky-ID matrix: "alice" vs "alice2", "ALICE", "a+b", "a&b", "a=b", "a%2Bb", "a_b", "앨리스", "o'hara", "alice&run_id=r2"."""
+        from mem0.memory.main import _escape_scope_value
+        ids = ["alice", "alice2", "bob", "ALICE", "a+b", "a&b", "a=b", "a%2Bb", "a_b", "aXb",
+               "a%b", "a\\b", "앨리스", "o'hara", "a%26b", "alice&run_id=r2", "a%3Db"]
+        for user in ids:
+            scope_str = f"run_id=r1&user_id={_escape_scope_value(user)}"
+            sqlite_manager.save_messages([{"role": "user", "content": "hello"}], scope_str)
+        for user in ids:
+            scope_str = f"run_id=r1&user_id={_escape_scope_value(user)}"
+            assert len(sqlite_manager.get_last_messages(scope_str)) == 1
+            sqlite_manager.delete_messages({"user_id": user})
+            assert len(sqlite_manager.get_last_messages(scope_str)) == 0
+
+    def test_empty_filter_is_noop(self, sqlite_manager):
+        """Empty filters are a no-op (validation happens in the caller, delete_all)."""
         sqlite_manager.save_messages([{"role": "user", "content": "hello"}], "user_id=alice")
-
-        sqlite_manager.delete_messages("")
-
+        sqlite_manager.delete_messages({})
         assert len(sqlite_manager.get_last_messages("user_id=alice")) == 1
 
-    def test_delete_messages_nonexistent_scope_does_not_raise(self, sqlite_manager):
-        """delete_messages should be safe to call for a scope with no stored messages."""
-        sqlite_manager.delete_messages("user_id=nobody")
-        assert sqlite_manager.get_last_messages("user_id=nobody") == []
+    def test_decode_before_split_invents_fields(self, sqlite_manager):
+        """Ensure literal ID containing '&' does not split into fake fields."""
+        sqlite_manager.save_messages([{"role": "user", "content": "hello"}], "user_id=alice%26run_id%3Dr2")
+        sqlite_manager.delete_messages({"user_id": "alice"})
+        assert len(sqlite_manager.get_last_messages("user_id=alice%26run_id%3Dr2")) == 1
+        sqlite_manager.delete_messages({"user_id": "alice&run_id=r2"})
+        assert len(sqlite_manager.get_last_messages("user_id=alice%26run_id%3Dr2")) == 0
 
     def test_reset_drops_tables(self, temp_db_path):
         """reset() must drop both history and messages tables."""
