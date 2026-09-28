@@ -107,11 +107,79 @@ export class SQLiteManager implements HistoryManager {
     txn();
   }
 
-  async deleteMessages(sessionScope: string): Promise<void> {
-    if (!sessionScope) return;
-    this.db
-      .prepare(`DELETE FROM messages WHERE session_scope = ?`)
-      .run(sessionScope);
+  async deleteMessages(filters: Record<string, any>): Promise<void> {
+    /**
+     * Deletes messages from the database based on the provided filters.
+     */
+    const allowedKeys = new Set(["user_id", "agent_id", "run_id"]);
+    if (!filters || typeof filters !== "object" || Array.isArray(filters)) {
+      throw new Error("Expected a nonempty mapping of supported entity keys");
+    }
+    const filterKeys = Object.keys(filters);
+    if (filterKeys.length === 0 || filterKeys.some(k => !allowedKeys.has(k))) {
+      throw new Error("Expected a nonempty mapping of supported entity keys");
+    }
+    for (const key of filterKeys) {
+      const value = filters[key];
+      if (typeof value !== "string" || !value) {
+        throw new Error("Expected nonempty string entity IDs");
+      }
+    }
+
+    const escapeScopeValue = (val: string) =>
+      val.replace(/%/g, "%25").replace(/&/g, "%26").replace(/=/g, "%3D");
+
+    const txn = this.db.transaction(() => {
+      // Fetch only scopes that contain the required filter keys and values to narrow down the session_scope retrieval results.
+      const likeConditions = filterKeys.map(() => "session_scope LIKE ?").join(" AND ");
+      const likeParams = filterKeys.map((k) => `%${k}=${escapeScopeValue(String(filters[k]))}%`);
+      const distinctScopes = this.db
+        .prepare(`SELECT DISTINCT session_scope FROM messages WHERE ${likeConditions}`)
+        .all(...likeParams) as { session_scope: string }[];
+
+      // Now filter to exact matches and add to scopesToDelete if the filters are a subset of the session_scope values.
+      const scopesToDelete: string[] = [];
+      for (const row of distinctScopes) {
+        if (!row.session_scope) continue;
+
+        try {
+          const decoded: Record<string, string> = {};
+          for (const component of row.session_scope.split("&")) {
+            if (!component) continue;
+            const parts = component.split("=");
+            if (parts.length !== 2) throw new Error("malformed");
+            const [key, value] = parts;
+            if (!allowedKeys.has(key) || key in decoded || !value) throw new Error("malformed");
+            decoded[key] = decodeURIComponent(value);
+          }
+
+          let isMatch = true;
+          for (const [k, v] of Object.entries(filters)) {
+            if (decoded[k] !== String(v)) {
+              isMatch = false;
+              break;
+            }
+          }
+          if (isMatch) scopesToDelete.push(row.session_scope);
+        } catch {
+          // invalid scope — skip it
+        }
+      }
+
+      if (scopesToDelete.length > 0) {
+        const stmt = this.db.prepare("DELETE FROM messages WHERE session_scope = ?");
+        for (const scope of scopesToDelete) {
+          stmt.run(scope);
+        }
+      }
+    });
+
+    try {
+      txn();
+    } catch (e) {
+      console.error(`Failed to delete messages: ${e}`);
+      throw e;
+    }
   }
 
   async getLastMessages(
@@ -131,11 +199,11 @@ export class SQLiteManager implements HistoryManager {
          ) ORDER BY created_at ASC`,
       )
       .all(sessionScope, limit) as Array<{
-      role: string;
-      content: string;
-      name: string | null;
-      created_at: string;
-    }>;
+        role: string;
+        content: string;
+        name: string | null;
+        created_at: string;
+      }>;
 
     return rows.map((r) => ({
       role: r.role,

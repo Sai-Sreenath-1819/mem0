@@ -1766,10 +1766,9 @@ export class Memory {
       deletedCount += batch.length;
     }
 
-    const sessionScope = this.buildSessionScope(filters);
-    if (sessionScope && typeof this.db.deleteMessages === "function") {
+    if (filters && Object.keys(filters).length > 0 && typeof this.db.deleteMessages === "function") {
       try {
-        await this.db.deleteMessages(sessionScope);
+        await this.db.deleteMessages(filters);
       } catch (e) {
         logger.warn(`Failed to delete scoped messages: ${e}`);
       }

@@ -24,7 +24,7 @@ export interface HistoryManager {
     Array<{ role: string; content: string; name?: string; createdAt: string }>
   >;
   deleteMessages?(
-    sessionScope: string
+    filters: Record<string, any>
   ): Promise<void>;
   batchAddHistory?(
     records: Array<{

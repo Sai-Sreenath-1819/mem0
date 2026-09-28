@@ -107,36 +107,60 @@ describe("SQLiteManager", () => {
 
   // ─── deleteMessages ────────────────────────────────────
 
-  test("deleteMessages clears only the target scope", async () => {
-    await db.saveMessages(
-      [{ role: "user", content: "My SSN is 123-45-6789" }],
-      "user_id=alice",
-    );
-    await db.saveMessages(
-      [{ role: "user", content: "unrelated" }],
-      "user_id=bob",
-    );
-
-    await db.deleteMessages("user_id=alice");
-
+  test("deleteMessages clears target scope", async () => {
+    await db.saveMessages([{ role: "user", content: "My SSN is 123-45-6789" }], "user_id=alice");
+    await db.saveMessages([{ role: "user", content: "unrelated" }], "user_id=bob");
+    await db.deleteMessages({ user_id: "alice" });
     expect(await db.getLastMessages("user_id=alice")).toHaveLength(0);
     expect(await db.getLastMessages("user_id=bob")).toHaveLength(1);
   });
 
-  test("deleteMessages on an empty scope is a no-op", async () => {
-    await db.saveMessages(
-      [{ role: "user", content: "hello" }],
-      "user_id=alice",
-    );
+  test("deleteMessages clears multiple sessions", async () => {
+    await db.saveMessages([{ role: "user", content: "hello" }], "run_id=r1&user_id=A");
+    await db.saveMessages([{ role: "user", content: "hello" }], "run_id=r2&user_id=A");
+    await db.saveMessages([{ role: "user", content: "hello" }], "run_id=r1&user_id=B");
+    await db.deleteMessages({ user_id: "A" });
+    expect(await db.getLastMessages("run_id=r1&user_id=A")).toHaveLength(0);
+    expect(await db.getLastMessages("run_id=r2&user_id=A")).toHaveLength(0);
+    expect(await db.getLastMessages("run_id=r1&user_id=B")).toHaveLength(1);
+  });
 
-    await db.deleteMessages("");
+  test("deleteMessages handles tricky IDs", async () => {
+    const escapeScopeValue = (val: string) => val.replace(/%/g, "%25").replace(/&/g, "%26").replace(/=/g, "%3D");
+    const ids = ["alice", "alice2", "bob", "ALICE", "a+b", "a&b", "a=b", "a%2Bb", "a_b", "aXb",
+                 "a%b", "a\\b", "앨리스", "o'hara", "a%26b", "alice&run_id=r2", "a%3Db"];
+    for (const user of ids) {
+      const scopeStr = `run_id=r1&user_id=${escapeScopeValue(user)}`;
+      await db.saveMessages([{ role: "user", content: "hello" }], scopeStr);
+    }
+    for (const user of ids) {
+      const scopeStr = `run_id=r1&user_id=${escapeScopeValue(user)}`;
+      expect(await db.getLastMessages(scopeStr)).toHaveLength(1);
+      await db.deleteMessages({ user_id: user });
+      expect(await db.getLastMessages(scopeStr)).toHaveLength(0);
+    }
+  });
 
+  test("empty or invalid filter never changes rows", async () => {
+    await db.saveMessages([{ role: "user", content: "hello" }], "user_id=alice");
+    const badFilters = [
+      {}, 
+      { user_id: "" }, 
+      { unknown: "alice" }, 
+      { user_id: null }
+    ];
+    for (const bad of badFilters) {
+      await expect(db.deleteMessages(bad as any)).rejects.toThrow();
+    }
     expect(await db.getLastMessages("user_id=alice")).toHaveLength(1);
   });
 
-  test("deleteMessages on a scope with no messages does not throw", async () => {
-    await expect(db.deleteMessages("user_id=nobody")).resolves.toBeUndefined();
-    expect(await db.getLastMessages("user_id=nobody")).toHaveLength(0);
+  test("decode before split invents fields", async () => {
+    await db.saveMessages([{ role: "user", content: "hello" }], "user_id=alice%26run_id%3Dr2");
+    await db.deleteMessages({ user_id: "alice" });
+    expect(await db.getLastMessages("user_id=alice%26run_id%3Dr2")).toHaveLength(1);
+    await db.deleteMessages({ user_id: "alice&run_id=r2" });
+    expect(await db.getLastMessages("user_id=alice%26run_id%3Dr2")).toHaveLength(0);
   });
 });
 
